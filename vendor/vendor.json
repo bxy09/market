@@ -1,0 +1,67 @@
+{
+	"comment": "",
+	"ignore": "test",
+	"package": [
+		{
+			"checksumSHA1": "cHbPvPMU/xgVDtjH5IsP0QmDWTQ=",
+			"path": "github.com/Sirupsen/logrus",
+			"revision": "6ba91e24c498b49d0363c723e9e2ab2b5b8fd012",
+			"revisionTime": "2015-05-27T13:39:09Z"
+		},
+		{
+			"checksumSHA1": "2IZGKMD4y38B05rNQIb5tnRIpR8=",
+			"path": "github.com/garyburd/redigo/internal",
+			"revision": "3e4727f0ef5938d3a846cdb57e560dba4419e854",
+			"revisionTime": "2015-05-20T15:56:02Z"
+		},
+		{
+			"checksumSHA1": "b63zT9pGnU+rFvj3hUqa32np23E=",
+			"path": "github.com/garyburd/redigo/redis",
+			"revision": "3e4727f0ef5938d3a846cdb57e560dba4419e854",
+			"revisionTime": "2015-05-20T15:56:02Z"
+		},
+		{
+			"checksumSHA1": "Bzx49sUTSfi/WouE5MS7VsqDfj4=",
+			"path": "github.com/go-sql-driver/mysql",
+			"revision": "fb7299726d2e68745a8805b14f2ff44b5c2cfa84",
+			"revisionTime": "2015-06-20T20:03:12Z"
+		},
+		{
+			"checksumSHA1": "GvtBwPEY/gt+cmc4zivBiskzYfk=",
+			"path": "github.com/robfig/cron",
+			"revision": "0f39cf7ebc65a602f45692f9894bd6a193faf8fa",
+			"revisionTime": "2016-03-29T15:39:55Z"
+		},
+		{
+			"checksumSHA1": "oaglBTpGgEUgk7m92i6nuZbpicE=",
+			"path": "golang.org/x/text/encoding",
+			"revision": "f773ec03ce334298742df7f3108fc0d402646d22",
+			"revisionTime": "2016-05-05T22:32:54Z"
+		},
+		{
+			"checksumSHA1": "zeHyHebIZl1tGuwGllIhjfci+wI=",
+			"path": "golang.org/x/text/encoding/internal",
+			"revision": "f773ec03ce334298742df7f3108fc0d402646d22",
+			"revisionTime": "2016-05-05T22:32:54Z"
+		},
+		{
+			"checksumSHA1": "TF4hoIqHVEAvOq67rfnSLSkcZ1Y=",
+			"path": "golang.org/x/text/encoding/internal/identifier",
+			"revision": "f773ec03ce334298742df7f3108fc0d402646d22",
+			"revisionTime": "2016-05-05T22:32:54Z"
+		},
+		{
+			"checksumSHA1": "WYfmebIyX5Zae8NUfu9PsQjQff0=",
+			"path": "golang.org/x/text/encoding/simplifiedchinese",
+			"revision": "f773ec03ce334298742df7f3108fc0d402646d22",
+			"revisionTime": "2016-05-05T22:32:54Z"
+		},
+		{
+			"checksumSHA1": "0uwDStcjVf2LGzegKmTBWsaZ6Ns=",
+			"path": "golang.org/x/text/transform",
+			"revision": "f773ec03ce334298742df7f3108fc0d402646d22",
+			"revisionTime": "2016-05-05T22:32:54Z"
+		}
+	],
+	"rootPath": "github.com/bxy09/market"
+}
