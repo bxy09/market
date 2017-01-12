@@ -13,11 +13,11 @@ import (
 	"time"
 	"net/url"
 	"github.com/bxy09/market"
-	_ "github.com/bxy09/market/key"
+	"github.com/bxy09/market/key"
 	"context"
 	"sync"
+	"strconv"
 )
-
 
 var (
 	flagSZDbf   = flag.String("dbfSZ", "SJSHQ.DBF", "SZ dbf to watch")
@@ -37,8 +37,8 @@ var (
 
 	suspensionSZ = map[string]bool{}
 
-	sjsxxDuration = time.Second //time.Minute
-	szDuration = 3 * time.Second //time.Minute
+	sjsxxDuration = 30 * time.Second //time.Minute
+	szDuration = 30 * time.Second //time.Minute
 )
 
 type FinancialType int
@@ -58,9 +58,12 @@ type Tick struct {
 	Last, Open, High, Low, Close float64
 	Volume                       float64
 	Suspension                   bool
+
+	key                          market.QKey
+	Status                       string
 }
 
-func (t *Tick) ToStringArray(target string) (s []string) {
+func (t Tick) ToStringArray(target string) (s []string) {
 	val := reflect.ValueOf(t).Elem()
 	s = make([]string, val.NumField()+1)
 	s[0] = target
@@ -69,6 +72,136 @@ func (t *Tick) ToStringArray(target string) (s []string) {
 		s[i+1] = value
 	}
 	return s
+}
+
+
+func (t Tick) Key() market.QKey {
+	return t.key
+}
+
+func (t Tick) Time() time.Time {
+	return t.Timestamp
+}
+
+func (t Tick) MarshalJSON() ([]byte, error) {
+	return json.Marshal(outputRecord{
+		Target:      strings.TrimPrefix(t.key.String(), "stock/"),
+		ProductType: 2, //for stock market
+		Timestamp:   t.Timestamp,
+		Open:        t.Open,
+		Close:       t.Close,
+		High:        t.High,
+		Low:         t.Low,
+		Last:        t.Last,
+		Volume:      t.Volume,
+		Suspension:  t.Status != "O",
+		Status:      t.Status,
+	})
+}
+
+func sendOnce_sz(file Interface) {
+	records := GetRecords(file)
+	timestamp := time.Now()
+	var err error
+
+	//特殊记录
+	sr := records[1]
+	if sr.Data["HQCJSL"] != "0" {
+		return
+	}
+	timeStr := strings.Trim(sr.Data["HQCJBS"], " ")
+	if len(timeStr) < 6 {
+		timeStr = "0" + timeStr
+	}
+	dateTimeStr := strings.Trim(sr.Data["HQZQJC"], " ") + timeStr
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	timestamp, err = time.ParseInLocation("20060102150405", dateTimeStr, loc)
+	if err != nil {
+		log.Warn("Parse SZ time err. Error message:", err)
+		return
+	}
+	if dateTimeStr == lastUpdateTimeStrSZ {
+		//TODO 目前不做处理
+		//timestamp.Add(1000)
+	} else {
+		lastUpdateTimeStrSZ = dateTimeStr
+	}
+	//取完信息后删除特殊记录
+	delete(records, 1)
+
+	for _, r := range records {
+		target := r.Data["HQZQDM"] + ".SZ"
+		hash := r.HashCode
+		lastHash, exist := recordsHashSZ[target]
+		if !exist || bytes.Compare(hash, lastHash) != 0 {
+			recordsHashSZ[target] = hash
+		} else {
+			continue
+		}
+
+		last, err := strconv.ParseFloat(r.Data["HQZRSP"], 64)
+		if err != nil {
+			log.Warn("Parse SZ last err. Error message:", err)
+			continue
+		}
+		open, err := strconv.ParseFloat(r.Data["HQJRKP"], 64)
+		if err != nil {
+			log.Warn("Parse SZ open err. Error message:", err)
+			continue
+		}
+		clos, err := strconv.ParseFloat(r.Data["HQZJCJ"], 64)
+		if err != nil {
+			log.Warn("Parse SZ close err. Error message:", err)
+			continue
+		}
+		high, err := strconv.ParseFloat(r.Data["HQZGCJ"], 64)
+		if err != nil {
+			log.Warn("Parse SZ high err. Error message:", err)
+			continue
+		}
+		low, err := strconv.ParseFloat(r.Data["HQZDCJ"], 64)
+		if err != nil {
+			log.Warn("Parse SZ low err. Error message:", err)
+			continue
+		}
+		vol, err := strconv.ParseFloat(r.Data["HQCJSL"], 64)
+		if err != nil {
+			log.Warn("Parse SZ volume err. Error message:", err)
+			continue
+		}
+		tick := recordData[target]
+		tick.Suspension = suspensionSZ[target]
+		tick.Target = target
+		tick.Timestamp = timestamp
+		tick.Id = int64(updateIdSZ)
+		tick.ProductType = STOCK
+		if suspensionSZ[target] || tick.Low < 0.00001 || tick.Low > 99990.0 {
+			//如果当前股票是停牌
+			tick.Last = last
+			tick.Open = last
+			tick.Close = last
+			tick.High = last
+			tick.Low = last
+			tick.Volume = 0
+		} else {
+			tick.Last = last
+			tick.Open = open
+			tick.Close = clos
+			tick.High = high
+			tick.Low = low
+			tick.Volume = vol
+		}
+		lastRecordMap[target] = r
+		recordData[target] = tick
+
+		tick.key, err = key.ParseFromStr(target)
+		if err != nil {
+			log.Warn("ParserFromStr error", err)
+		} else {
+			workingDBF.latestRecords[tick.key.UID()] = tick
+		}
+	}
+	updateIdSZ++
 }
 
 func SJSXX() {
@@ -163,7 +296,8 @@ func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 
 type dbf struct {
 	lock          sync.RWMutex
-	latestRecords map[int]*dbfRecord
+	//latestRecords map[int]*dbfRecord
+	latestRecords map[int]Tick
 	onUpdate      func(market.Record)
 }
 
@@ -176,22 +310,25 @@ func (t *dbf) Run(ctx context.Context) error {
 	}
 
 	hasher := md5.New()
-	lastHashSH := []byte{}
+	lastHashSZ := []byte{}
 
 	workingDBF = t
 	go SJSXX()
 
+	workingDBF.latestRecords = map[int]Tick{}
 	for {
 		time.Sleep(szDuration)
 
-		contentSH, err := ioutil.ReadFile(*flagSZDbf)
+		contentSZ, err := ioutil.ReadFile(*flagSZDbf)
 		if err != nil {
 			log.Warn(err)
 		} else {
-			hash := hasher.Sum(contentSH)
-			if bytes.Compare(hash, lastHashSH) != 0 {
+			hash := hasher.Sum(contentSZ)
+			if bytes.Compare(hash, lastHashSZ) != 0 {
 				log.Debug("SZ changed")
-				lastHashSH = hash
+				lastHashSZ = hash
+				reader := bytes.NewReader(contentSZ)
+				sendOnce_sz(reader)
 				t.onUpdate(&dbfRecord{})
 			} else {
 				log.Debug("SZ unchanged")
@@ -206,11 +343,26 @@ func (t *dbf) OnUpdate(onUpdate func(market.Record)) {
 	defer t.lock.Unlock()
 	t.onUpdate = onUpdate
 }
-func (t *dbf) Latest(market.QKey) market.Record {
-	return nil
+func (t *dbf) Latest(key market.QKey) market.Record {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+	record, exist := t.latestRecords[key.UID()]
+	if !exist {
+		return nil
+	}
+	return record
 }
 func (t *dbf) LatestAll() []market.Record {
-	return nil
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+	records := make([]market.Record, len(t.latestRecords))
+	idx := 0
+	for _, r := range t.latestRecords {
+		records[idx] = r
+		fmt.Println(idx, ":", r)
+		idx++
+	}
+	return records
 }
 
 var workingDBF *dbf
