@@ -37,8 +37,8 @@ var (
 
 	suspensionSZ = map[string]bool{}
 
-	sjsxxDuration = 30 * time.Second //time.Minute
-	szDuration = 30 * time.Second //time.Minute
+	sjsxxDuration = 10 * time.Second //time.Minute
+	szDuration = 10 * time.Second //time.Minute
 )
 
 type FinancialType int
@@ -49,6 +49,19 @@ const (
 	FUTURES
 	STOCK
 )
+
+type dbfKey struct {
+	name string
+	uid  int
+}
+
+func (k dbfKey) UID() int {
+	return k.uid
+}
+
+func (k dbfKey) String() string {
+	return k.name
+}
 
 type Tick struct {
 	Id                           int64
@@ -73,7 +86,6 @@ func (t Tick) ToStringArray(target string) (s []string) {
 	}
 	return s
 }
-
 
 func (t Tick) Key() market.QKey {
 	return t.key
@@ -228,26 +240,13 @@ func SJSXX() {
 					}
 				}
 				lastHashSJSXX = hash
-				workingDBF.onUpdate(&dbfRecord{})
+				workingDBF.onUpdateHandler(&dbfRecord{})
 			} else {
 				log.Debug("SJSXX unchanged")
 			}
 		}
 		time.Sleep(sjsxxDuration)
 	}
-}
-
-type dbfKey struct {
-	name string
-	uid  int
-}
-
-func (k dbfKey) UID() int {
-	return k.uid
-}
-
-func (k dbfKey) String() string {
-	return k.name
 }
 
 var DBFScheme = "dbf"
@@ -294,14 +293,15 @@ func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 	})
 }
 
+
 type dbf struct {
-	lock          sync.RWMutex
+	lock          	sync.RWMutex
 	//latestRecords map[int]*dbfRecord
-	latestRecords map[int]Tick
-	onUpdate      func(market.Record)
+	latestRecords 	map[int]Tick
+	onUpdateHandler	func(market.Record)
 }
 
-func (t *dbf) Run(ctx context.Context) error {
+func (m *dbf) Run(ctx context.Context) error {
 	flag.Parse()
 	if *flagDebug {
 		log.SetLevel(log.DebugLevel)
@@ -311,11 +311,11 @@ func (t *dbf) Run(ctx context.Context) error {
 
 	hasher := md5.New()
 	lastHashSZ := []byte{}
+	m.latestRecords = map[int]Tick{}
+	workingDBF = m
 
-	workingDBF = t
 	go SJSXX()
 
-	workingDBF.latestRecords = map[int]Tick{}
 	for {
 		time.Sleep(szDuration)
 
@@ -329,7 +329,14 @@ func (t *dbf) Run(ctx context.Context) error {
 				lastHashSZ = hash
 				reader := bytes.NewReader(contentSZ)
 				sendOnce_sz(reader)
-				t.onUpdate(&dbfRecord{})
+
+				for _, r := range m.latestRecords {
+					m.lock.RLock()
+					if m.onUpdateHandler != nil {
+						m.onUpdateHandler(r)
+					}
+					m.lock.RUnlock()
+				}
 			} else {
 				log.Debug("SZ unchanged")
 			}
@@ -338,29 +345,27 @@ func (t *dbf) Run(ctx context.Context) error {
 	return nil
 }
 
-func (t *dbf) OnUpdate(onUpdate func(market.Record)) {
-	t.lock.Lock()
-	defer t.lock.Unlock()
-	t.onUpdate = onUpdate
+func (m *dbf) OnUpdate(onUpdate func(market.Record)) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	m.onUpdateHandler = onUpdate
 }
-func (t *dbf) Latest(key market.QKey) market.Record {
-	t.lock.RLock()
-	defer t.lock.RUnlock()
-	record, exist := t.latestRecords[key.UID()]
+func (m *dbf) Latest(key market.QKey) market.Record {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	record, exist := m.latestRecords[key.UID()]
 	if !exist {
 		return nil
 	}
 	return record
 }
-func (t *dbf) LatestAll() []market.Record {
-	t.lock.RLock()
-	defer t.lock.RUnlock()
-	records := make([]market.Record, len(t.latestRecords))
-	idx := 0
-	for _, r := range t.latestRecords {
-		records[idx] = r
-		fmt.Println(idx, ":", r)
-		idx++
+func (m *dbf) LatestAll() []market.Record {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	records := make([]market.Record, len(m.latestRecords))
+	for i, r := range m.latestRecords {
+		records[i] = r
+		fmt.Println(i, ":", r)
 	}
 	return records
 }
