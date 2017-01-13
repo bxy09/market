@@ -76,7 +76,7 @@ type Tick struct {
 	Status                       string
 }
 
-func (t Tick) ToStringArray(target string) (s []string) {
+func (t *Tick) ToStringArray(target string) (s []string) {
 	val := reflect.ValueOf(t).Elem()
 	s = make([]string, val.NumField()+1)
 	s[0] = target
@@ -87,15 +87,23 @@ func (t Tick) ToStringArray(target string) (s []string) {
 	return s
 }
 
-func (t Tick) Key() market.QKey {
+func (t *Tick) Key() market.QKey {
 	return t.key
 }
 
-func (t Tick) Time() time.Time {
+func (t *Tick) Time() time.Time {
 	return t.Timestamp
 }
 
-func (t Tick) MarshalJSON() ([]byte, error) {
+func (t *Tick) Price() float64 {
+	return t.Close
+}
+
+func (t *Tick) LPrice() float64 {
+	return t.Last
+}
+
+func (t *Tick) MarshalJSON() ([]byte, error) {
 	return json.Marshal(outputRecord{
 		Target:      strings.TrimPrefix(t.key.String(), "stock/"),
 		ProductType: 2, //for stock market
@@ -294,6 +302,14 @@ func (record *dbfRecord) Time() time.Time {
 	return record.time
 }
 
+func (record *dbfRecord) Price() float64 {
+	return record.close
+}
+
+func (record *dbfRecord) LPrice() float64 {
+	return record.last
+}
+
 func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 	return json.Marshal(outputRecord{
 		Target:      strings.TrimPrefix(record.key.String(), "stock/"),
@@ -312,7 +328,6 @@ func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 
 type dbf struct {
 	lock          	sync.RWMutex
-	//latestRecords map[int]*dbfRecord
 	latestRecords 	map[int]*Tick
 	onUpdateHandler	func(market.Record)
 }
@@ -383,7 +398,6 @@ func (m *dbf) LatestAll() []market.Record {
 	records := make([]market.Record, len(m.latestRecords))
 	for i, r := range m.latestRecords {
 		records[i] = r
-		fmt.Println(i, ":", r)
 	}
 	return records
 }
