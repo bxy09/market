@@ -88,7 +88,6 @@ func sendOnce_sz(file Interface) {
 	//取完信息后删除特殊记录
 	delete(records, 1)
 
-	//result := make(map[int]*dbfRecord)
 	for _, r := range records {
 		target := r.Data["HQZQDM"] + ".SZ"
 		hash := r.HashCode
@@ -130,9 +129,11 @@ func sendOnce_sz(file Interface) {
 			continue
 		}
 		tick := recordData[target]
+		tick.suspension = suspensionSZ[target]
 		tick.time = timestamp
 		tick.id = int64(updateIdSZ)
-		if tick.status != "0" || tick.low < 0.00001 || tick.low > 99990.0 {
+		tick.productType = STOCK
+		if suspensionSZ[target] || tick.low < 0.00001 || tick.low > 99990.0 {
 			//如果当前股票是停牌
 			tick.last = last
 			tick.open = last
@@ -167,11 +168,9 @@ func sendOnce_sz(file Interface) {
 				key: tick.key,
 				status: tick.status,
 			}
-			//result[tick.Key().UID()] = record
 			workingDBF.latestRecords[tick.Key().UID()] = record
 		}
 	}
-	//workingDBF.latestRecords = result
 	updateIdSZ++
 }
 
@@ -188,6 +187,7 @@ func SJSXX() {
 			if bytes.Compare(hash, lastHashSJSXX) != 0 {
 				log.Debug("SJSXX changed")
 				reader := bytes.NewReader(contentSJSXX)
+
 				records := GetRecords(reader)
 				delete(records, 1)
 				for _, r := range records {
@@ -199,7 +199,6 @@ func SJSXX() {
 					}
 				}
 				lastHashSJSXX = hash
-				workingDBF.onUpdateHandler(&dbfRecord{})
 			} else {
 				log.Debug("SJSXX unchanged")
 			}
@@ -213,10 +212,12 @@ var DBFScheme = "dbf"
 type dbfRecord struct {
 	id							 int64
 	time                         time.Time
+	productType                  FinancialType
 	key                          market.QKey
 	open, high, low, close, last float64
 	volume                       float64
 	status                       string
+	suspension                   bool
 }
 
 type outputRecord struct {
@@ -248,7 +249,7 @@ func (record *dbfRecord) LPrice() float64 {
 func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 	return json.Marshal(outputRecord{
 		Target:      strings.TrimPrefix(record.key.String(), "stock/"),
-		ProductType: int(STOCK), //for stock market
+		ProductType: int(record.productType), //for stock market
 		Timestamp:   record.time,
 		Open:        record.open,
 		Close:       record.close,
@@ -256,7 +257,7 @@ func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 		Low:         record.low,
 		Last:        record.last,
 		Volume:      record.volume,
-		Suspension:  record.status != "O",
+		Suspension:  record.suspension,
 		Status:      record.status,
 	})
 }
@@ -277,7 +278,6 @@ func (m *dbf) Run(ctx context.Context) error {
 
 	hasher := md5.New()
 	lastHashSZ := []byte{}
-	m.latestRecords = map[int]*dbfRecord{}
 	workingDBF = m
 
 	go SJSXX()
@@ -344,6 +344,7 @@ var workingDBF *dbf
 
 func initDBF(url *url.URL) (market.Market, error) {
 	return &dbf{
+		latestRecords: map[int]*dbfRecord{},
 	}, nil
 }
 
