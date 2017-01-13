@@ -167,6 +167,8 @@ func sendOnce_sz(file Interface) {
 				volume: tick.volume,
 				key: tick.key,
 				status: tick.status,
+				suspension: tick.suspension,
+				productType: tick.productType,
 			}
 			workingDBF.latestRecords[tick.Key().UID()] = record
 		}
