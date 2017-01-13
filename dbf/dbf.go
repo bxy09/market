@@ -141,6 +141,7 @@ func sendOnce_sz(file Interface) {
 	//取完信息后删除特殊记录
 	delete(records, 1)
 
+	result := make(map[int]*Tick)
 	for _, r := range records {
 		target := r.Data["HQZQDM"] + ".SZ"
 		hash := r.HashCode
@@ -208,11 +209,27 @@ func sendOnce_sz(file Interface) {
 
 		tick.key, err = key.ParseFromStr(target)
 		if err != nil {
-			log.Warn("ParserFromStr error", err)
+			log.Warn("ParserFromStr error:", err.Error())
 		} else {
-			workingDBF.latestRecords[tick.key.UID()] = tick
+			record := &Tick{
+				Id: tick.Id,
+				Target: tick.Target,
+				Timestamp: tick.Timestamp,
+				ProductType: tick.ProductType,
+				Last: tick.Last,
+				Open: tick.Open,
+				High: tick.High,
+				Low: tick.Low,
+				Close: tick.Close,
+				Volume: tick.Volume,
+				Suspension: tick.Suspension,
+				key: tick.key,
+				Status: tick.Status,
+			}
+			result[tick.Key().UID()] = record
 		}
 	}
+	workingDBF.latestRecords = result
 	updateIdSZ++
 }
 
@@ -293,11 +310,10 @@ func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 	})
 }
 
-
 type dbf struct {
 	lock          	sync.RWMutex
 	//latestRecords map[int]*dbfRecord
-	latestRecords 	map[int]Tick
+	latestRecords 	map[int]*Tick
 	onUpdateHandler	func(market.Record)
 }
 
@@ -311,7 +327,7 @@ func (m *dbf) Run(ctx context.Context) error {
 
 	hasher := md5.New()
 	lastHashSZ := []byte{}
-	m.latestRecords = map[int]Tick{}
+	m.latestRecords = map[int]*Tick{}
 	workingDBF = m
 
 	go SJSXX()
@@ -350,6 +366,7 @@ func (m *dbf) OnUpdate(onUpdate func(market.Record)) {
 	defer m.lock.Unlock()
 	m.onUpdateHandler = onUpdate
 }
+
 func (m *dbf) Latest(key market.QKey) market.Record {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
@@ -359,6 +376,7 @@ func (m *dbf) Latest(key market.QKey) market.Record {
 	}
 	return record
 }
+
 func (m *dbf) LatestAll() []market.Record {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
