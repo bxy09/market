@@ -66,7 +66,7 @@ func sendOnce_sz(file Interface) {
 	//特殊记录
 	sr := records[1]
 	if sr.Data["HQCJSL"] != "0" {
-		//return
+		return
 	}
 	timeStr := strings.Trim(sr.Data["HQCJBS"], " ")
 	if len(timeStr) < 6 {
