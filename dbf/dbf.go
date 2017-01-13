@@ -5,10 +5,8 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"flag"
-	"fmt"
 	log "github.com/Sirupsen/logrus"
 	"io/ioutil"
-	"reflect"
 	"strings"
 	"time"
 	"net/url"
@@ -24,15 +22,12 @@ var (
 	flagSZxxDbf   = flag.String("dbfSZXX", "SJSXXN.DBF", "SZxx dbf to watch")
 	flagDebug   = flag.Bool("debug", false, "debug mode")
 
-	lastUpdateTimeStrSH string
 	lastUpdateTimeStrSZ string
 
-	updateIdSH int
 	updateIdSZ int
 
-	recordData    = map[string]Tick{}
+	recordData    = map[string]dbfRecord{}
 	lastRecordMap = map[string]Record{}
-	recordsHashSH = map[string][]byte{}
 	recordsHashSZ = map[string][]byte{}
 
 	suspensionSZ = map[string]bool{}
@@ -61,62 +56,6 @@ func (k dbfKey) UID() int {
 
 func (k dbfKey) String() string {
 	return k.name
-}
-
-type Tick struct {
-	Id                           int64
-	Target                       string
-	Timestamp                    time.Time
-	ProductType                  FinancialType
-	Last, Open, High, Low, Close float64
-	Volume                       float64
-	Suspension                   bool
-
-	key                          market.QKey
-	Status                       string
-}
-
-func (t *Tick) ToStringArray(target string) (s []string) {
-	val := reflect.ValueOf(t).Elem()
-	s = make([]string, val.NumField()+1)
-	s[0] = target
-	for i := 0; i < val.NumField(); i++ {
-		value := fmt.Sprintf("%v", val.Field(i).Interface())
-		s[i+1] = value
-	}
-	return s
-}
-
-func (t *Tick) Key() market.QKey {
-	return t.key
-}
-
-func (t *Tick) Time() time.Time {
-	return t.Timestamp
-}
-
-func (t *Tick) Price() float64 {
-	return t.Close
-}
-
-func (t *Tick) LPrice() float64 {
-	return t.Last
-}
-
-func (t *Tick) MarshalJSON() ([]byte, error) {
-	return json.Marshal(outputRecord{
-		Target:      strings.TrimPrefix(t.key.String(), "stock/"),
-		ProductType: 2, //for stock market
-		Timestamp:   t.Timestamp,
-		Open:        t.Open,
-		Close:       t.Close,
-		High:        t.High,
-		Low:         t.Low,
-		Last:        t.Last,
-		Volume:      t.Volume,
-		Suspension:  t.Status != "O",
-		Status:      t.Status,
-	})
 }
 
 func sendOnce_sz(file Interface) {
@@ -149,7 +88,7 @@ func sendOnce_sz(file Interface) {
 	//取完信息后删除特殊记录
 	delete(records, 1)
 
-	result := make(map[int]*Tick)
+	result := make(map[int]*dbfRecord)
 	for _, r := range records {
 		target := r.Data["HQZQDM"] + ".SZ"
 		hash := r.HashCode
@@ -191,26 +130,23 @@ func sendOnce_sz(file Interface) {
 			continue
 		}
 		tick := recordData[target]
-		tick.Suspension = suspensionSZ[target]
-		tick.Target = target
-		tick.Timestamp = timestamp
-		tick.Id = int64(updateIdSZ)
-		tick.ProductType = STOCK
-		if suspensionSZ[target] || tick.Low < 0.00001 || tick.Low > 99990.0 {
+		tick.time = timestamp
+		tick.id = int64(updateIdSZ)
+		if tick.status != "0" || tick.low < 0.00001 || tick.low > 99990.0 {
 			//如果当前股票是停牌
-			tick.Last = last
-			tick.Open = last
-			tick.Close = last
-			tick.High = last
-			tick.Low = last
-			tick.Volume = 0
+			tick.last = last
+			tick.open = last
+			tick.close = last
+			tick.high = last
+			tick.low = last
+			tick.volume = 0
 		} else {
-			tick.Last = last
-			tick.Open = open
-			tick.Close = clos
-			tick.High = high
-			tick.Low = low
-			tick.Volume = vol
+			tick.last = last
+			tick.open = open
+			tick.close = clos
+			tick.high = high
+			tick.low = low
+			tick.volume = vol
 		}
 		lastRecordMap[target] = r
 		recordData[target] = tick
@@ -219,20 +155,17 @@ func sendOnce_sz(file Interface) {
 		if err != nil {
 			log.Warn("ParserFromStr error:", err.Error())
 		} else {
-			record := &Tick{
-				Id: tick.Id,
-				Target: tick.Target,
-				Timestamp: tick.Timestamp,
-				ProductType: tick.ProductType,
-				Last: tick.Last,
-				Open: tick.Open,
-				High: tick.High,
-				Low: tick.Low,
-				Close: tick.Close,
-				Volume: tick.Volume,
-				Suspension: tick.Suspension,
+			record := &dbfRecord{
+				id: tick.id,
+				time: tick.time,
+				last: tick.last,
+				open: tick.open,
+				high: tick.high,
+				low: tick.low,
+				close: tick.close,
+				volume: tick.volume,
 				key: tick.key,
-				Status: tick.Status,
+				status: tick.status,
 			}
 			result[tick.Key().UID()] = record
 		}
@@ -277,6 +210,7 @@ func SJSXX() {
 var DBFScheme = "dbf"
 
 type dbfRecord struct {
+	id							 int64
 	time                         time.Time
 	key                          market.QKey
 	open, high, low, close, last float64
@@ -313,7 +247,7 @@ func (record *dbfRecord) LPrice() float64 {
 func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 	return json.Marshal(outputRecord{
 		Target:      strings.TrimPrefix(record.key.String(), "stock/"),
-		ProductType: 2, //for stock market
+		ProductType: int(STOCK), //for stock market
 		Timestamp:   record.time,
 		Open:        record.open,
 		Close:       record.close,
@@ -328,7 +262,7 @@ func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 
 type dbf struct {
 	lock          	sync.RWMutex
-	latestRecords 	map[int]*Tick
+	latestRecords 	map[int]*dbfRecord
 	onUpdateHandler	func(market.Record)
 }
 
@@ -342,7 +276,7 @@ func (m *dbf) Run(ctx context.Context) error {
 
 	hasher := md5.New()
 	lastHashSZ := []byte{}
-	m.latestRecords = map[int]*Tick{}
+	m.latestRecords = map[int]*dbfRecord{}
 	workingDBF = m
 
 	go SJSXX()
