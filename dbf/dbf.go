@@ -66,7 +66,7 @@ func sendOnce_sz(file Interface) {
 	//特殊记录
 	sr := records[1]
 	if sr.Data["HQCJSL"] != "0" {
-		return
+		//return
 	}
 	timeStr := strings.Trim(sr.Data["HQCJBS"], " ")
 	if len(timeStr) < 6 {
@@ -88,7 +88,7 @@ func sendOnce_sz(file Interface) {
 	//取完信息后删除特殊记录
 	delete(records, 1)
 
-	result := make(map[int]*dbfRecord)
+	//result := make(map[int]*dbfRecord)
 	for _, r := range records {
 		target := r.Data["HQZQDM"] + ".SZ"
 		hash := r.HashCode
@@ -151,7 +151,7 @@ func sendOnce_sz(file Interface) {
 		lastRecordMap[target] = r
 		recordData[target] = tick
 
-		tick.key, err = key.ParseFromStr(target)
+		tick.key, err = key.ParseFromStr("stock/" + target)
 		if err != nil {
 			log.Warn("ParserFromStr error:", err.Error())
 		} else {
@@ -167,10 +167,11 @@ func sendOnce_sz(file Interface) {
 				key: tick.key,
 				status: tick.status,
 			}
-			result[tick.Key().UID()] = record
+			//result[tick.Key().UID()] = record
+			workingDBF.latestRecords[tick.Key().UID()] = record
 		}
 	}
-	workingDBF.latestRecords = result
+	//workingDBF.latestRecords = result
 	updateIdSZ++
 }
 
@@ -330,8 +331,11 @@ func (m *dbf) LatestAll() []market.Record {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 	records := make([]market.Record, len(m.latestRecords))
-	for i, r := range m.latestRecords {
-		records[i] = r
+	log.Debug(len(m.latestRecords))
+	idx := 0
+	for _, r := range m.latestRecords {
+		records[idx] = r
+		idx++
 	}
 	return records
 }
