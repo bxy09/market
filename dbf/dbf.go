@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"errors"
 	"fmt"
+	"os"
 )
 
 var (
@@ -48,7 +49,7 @@ const (
 	VOLUME
 )
 
-func (m *dbf)sendOnce(stockId string, file Interface) {
+func (m *dbf)saveLatest(stockId string, file Interface) {
 	records := GetRecords(file)
 	timestamp := time.Now()
 	var err error
@@ -174,22 +175,34 @@ func (m *dbf)sendOnce(stockId string, file Interface) {
 	(*updateId)++
 }
 
-func (m *dbf)SZ(ctx context.Context) error {
+func (m *dbf)queryStock(stockId string, ctx context.Context) error {
+	var flagDbf *string
+	var duration time.Duration
+	stockId = strings.ToUpper(stockId)
+	if stockId == "SZ" {
+		flagDbf = flagSZDbf
+		duration = szDuration
+	} else if stockId == "SH" {
+		flagDbf = flagSHDbf
+		duration = shDuration
+	} else {
+		log.Warn("Unknown stock")
+		return errors.New("Unknown stock")
+	}
 	hasher := md5.New()
 	lastHash := []byte{}
 
 	for {
-		content, err := ioutil.ReadFile(*flagSZDbf)
+		content, err := ioutil.ReadFile(*flagDbf)
 		if err != nil {
 			log.Warn(err)
 		} else {
 			hash := hasher.Sum(content)
 			if bytes.Compare(hash, lastHash) != 0 {
-				log.Debug("SZ changed")
+				log.Debug(fmt.Sprintf("%s changed", stockId))
 				lastHash = hash
 				reader := bytes.NewReader(content)
-				m.sendOnce("SZ", reader)
-
+				m.saveLatest(stockId, reader)
 				for _, r := range m.latestRecords {
 					m.lock.RLock()
 					if m.onUpdateHandler != nil {
@@ -198,11 +211,11 @@ func (m *dbf)SZ(ctx context.Context) error {
 					m.lock.RUnlock()
 				}
 			} else {
-				log.Debug("SZ unchanged")
+				log.Debug(fmt.Sprintf("%s unchanged", stockId))
 			}
 		}
 
-		timer := time.NewTimer(szDuration)
+		timer := time.NewTimer(duration)
 		select {
 		case <-timer.C:
 			timer.Stop()
@@ -212,45 +225,7 @@ func (m *dbf)SZ(ctx context.Context) error {
 	}
 }
 
-func (m *dbf)SH(ctx context.Context) error {
-	hasher := md5.New()
-	lastHash := []byte{}
-
-	for {
-		content, err := ioutil.ReadFile(*flagSHDbf)
-		if err != nil {
-			log.Warn(err)
-		} else {
-			hash := hasher.Sum(content)
-			if bytes.Compare(hash, lastHash) != 0 {
-				log.Debug("SH changed")
-				lastHash = hash
-				reader := bytes.NewReader(content)
-				m.sendOnce("SH", reader)
-
-				for _, r := range m.latestRecords {
-					m.lock.RLock()
-					if m.onUpdateHandler != nil {
-						m.onUpdateHandler(r)
-					}
-					m.lock.RUnlock()
-				}
-			} else {
-				log.Debug("SH unchanged")
-			}
-		}
-
-		timer := time.NewTimer(shDuration)
-		select {
-		case <-timer.C:
-			timer.Stop()
-		case <-ctx.Done():
-			return nil
-		}
-	}
-}
-
-func (m *dbf)SJSXX(ctx context.Context) error {
+func (m *dbf)checkStock(ctx context.Context) error {
 	hasher := md5.New()
 	lastHash := []byte{}
 
@@ -294,8 +269,6 @@ func (m *dbf)SJSXX(ctx context.Context) error {
 		}
 	}
 }
-
-var DBFScheme = "dbf"
 
 type dbfRecord struct {
 	id							 int64
@@ -361,41 +334,22 @@ type dbf struct {
 	updateIdSZ 			int
 	updateIdSH 			int
 	suspension			map[int]bool
+	stockId				string
+	isStopDbf			string
 }
 
-// ErrBusy 该服务忙, DBF一次只能承担一个连接
-var ErrBusy = errors.New("dbf is busy")
-
 func (m *dbf) Run(ctx context.Context) error {
-	flag.Parse()
-	if *flagDebug {
-		log.SetLevel(log.DebugLevel)
-	} else {
-		log.SetLevel(log.InfoLevel)
-	}
-
-	select {
-	case <-dbfAvailable:
-	default:
-		return ErrBusy
-	}
-	defer func() {
-		dbfAvailable <- true
-	}()
 	log.Debug(time.Now().String(), ": Try to connect with dbf server")
 
-	go m.SJSXX(ctx)
-	go m.SZ(ctx)
-	go m.SH(ctx)
-
-	for {
-		timer := time.NewTimer(szDuration)
-		select {
-		case <-timer.C:
-			timer.Stop()
-		case <-ctx.Done():
-			return nil
-		}
+	if m.isStopDbf != "" {
+		go m.checkStock(ctx)
+	}
+	if m.stockId != "" {
+		go m.queryStock(m.stockId, ctx)
+	}
+	select {
+	case <-ctx.Done():
+		return nil
 	}
 }
 
@@ -427,10 +381,30 @@ func (m *dbf) LatestAll() []market.Record {
 	return records
 }
 
-var dbfAvailable = make(chan bool, 1)
+//DBFScheme Dbf 格式的市场数据, 完整的路径定义为:
+//dbf:///mnt/dbf/SJSHQ.DBF?format=sz&&isStop=SJSXXN.DBF
+var DBFScheme = "dbf"
+
+//ErrIsDir 指定的路径是一个目录
+var ErrIsDir = errors.New("Is dir, want file")
 
 func initDBF(url *url.URL) (market.Market, error) {
+	flag.Parse()
+	if *flagDebug {
+		log.SetLevel(log.DebugLevel)
+	} else {
+		log.SetLevel(log.InfoLevel)
+	}
+	fInfo, err := os.Stat(url.Path)
+	if err != nil {
+		return nil, err
+	}
+	if fInfo.IsDir() {
+		return nil, ErrIsDir
+	}
 	return &dbf{
+		stockId	:		url.Query().Get("format"),
+		isStopDbf:		url.Query().Get("isStop"),
 		recordData:		map[int]dbfRecord{},
 		lastRecordMap:	map[int]Record{},
 		recordsHash:	map[int][]byte{},
@@ -443,5 +417,4 @@ func initDBF(url *url.URL) (market.Market, error) {
 
 func init() {
 	market.Markets[DBFScheme] = initDBF
-	dbfAvailable <- true
 }
