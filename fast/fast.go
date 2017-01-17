@@ -18,6 +18,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"flag"
+	"crypto/md5"
+	"fmt"
+)
+
+var (
+	flagDebug   = flag.Bool("debug", false, "debug mode")
 )
 
 type fast struct {
@@ -33,12 +40,25 @@ type fast struct {
 func (m *fast) Run(ctx context.Context) error {
 	var failedForLastTime bool
 	var updatedCount int
+	hasher := md5.New()
+	lastHash := []byte{}
 	do := func() error {
-		bytes, err := ioutil.ReadFile(m.path)
+		content, err := ioutil.ReadFile(m.path)
 		if err != nil {
 			return err
 		}
-		ss, err := unmarshalSnapShot(bytes, m.parameter)
+		hash := hasher.Sum(content)
+		if bytes.Compare(hash, lastHash) == 0 {
+			logrus.Debug(fmt.Sprintf("unchanged" ))
+			return nil
+		}
+		logrus.Debug(fmt.Sprintf("changed" ))
+		lastHash = hash
+		content, err = ioutil.ReadFile(m.path)
+		if err != nil {
+			return err
+		}
+		ss, err := unmarshalSnapShot(content, m.parameter)
 		if err != nil {
 			return err
 		}
@@ -215,8 +235,19 @@ func unmarshalSnapShot(data []byte, parameters map[string]interface{}) (snapShot
 					return nil, err
 				}
 			} else {
-				if len(words) < 13 {
-					return nil, ErrShortOfWords
+				if len(words) < 13 || reader.Len() == 0 {
+					tempBuf := make([]byte, len(data)*2)
+					utf8Size, err := utfReader.Read(tempBuf)
+					if err != nil {
+						break
+					}
+					readerBuf := make([]byte, buffer.Len() + utf8Size)
+					copy(readerBuf, []byte(buffer.String()))
+					copy(readerBuf[buffer.Len():], tempBuf[:utf8Size])
+					reader = bytes.NewReader(readerBuf)
+					buffer = bytes.NewBufferString("")
+					continue
+					//return nil, ErrShortOfWords
 				}
 				//get time out
 				clock, err := time.ParseInLocation("15:04:05.999", words[len(words)-1], time.Local)
@@ -251,11 +282,11 @@ func unmarshalSnapShot(data []byte, parameters map[string]interface{}) (snapShot
 						low:    low,
 						last:   last,
 						volume: volume,
-						status: strings.TrimSpace(words[len(words)-2]),
+						status: strings.TrimSpace(words[len(words) - 2]),
 					}
 					result[record.Key().UID()] = record
 				} else {
-					logrus.WithField("target", qkey.String()).Warn("扫描数据时发现有对象的 Last 字段为零, 提过该对象")
+					//logrus.WithField("target", qkey.String()).Warn("扫描数据时发现有对象的 Last 字段为零, 提过该对象")
 				}
 			}
 			buffer.Reset()
@@ -285,6 +316,12 @@ var FastScheme = "fast"
 var ErrIsDir = errors.New("Is dir, want file")
 
 func initFast(url *url.URL) (market.Market, error) {
+	flag.Parse()
+	if *flagDebug {
+		logrus.SetLevel(logrus.DebugLevel)
+	} else {
+		logrus.SetLevel(logrus.InfoLevel)
+	}
 	fInfo, err := os.Stat(url.Path)
 	if err != nil {
 		return nil, err
