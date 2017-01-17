@@ -284,7 +284,7 @@ func unmarshalSnapShot(reader io.Reader, parameters map[string]interface{}) (sna
 type snapShot map[int]*fastRecord
 
 //FastScheme Fast 格式的市场数据, 完整的路径定义为:
-// fast:///mnt/data/mkdt001.txt
+// fast:///mnt/data/mkdt001.txt?market=SZ&&minLeap=5s&&debug=true
 var FastScheme = "fast"
 
 //ErrIsDir 指定的路径是一个目录
@@ -292,7 +292,7 @@ var ErrIsDir = errors.New("Is dir, want file")
 
 func initFast(url *url.URL) (market.Market, error) {
 	logger = logrus.New()
-	if strings.ToUpper(url.Query().Get("debug")) == "TRUE" {
+	if url.Query().Get("debug") == "true" {
 		logger.Level = logrus.DebugLevel
 	} else {
 		logger.Level = logrus.InfoLevel
@@ -310,7 +310,7 @@ func initFast(url *url.URL) (market.Market, error) {
 	}
 	defer reader.Close()
 	var parameter map[string]interface{} = nil
-	if url.Query().Get("market") == "SZ" {
+	if strings.ToUpper(url.Query().Get("market")) == "SZ" {
 		parameter = map[string]interface{}{"market": "SZ"}
 	}
 	ss, err := unmarshalSnapShot(reader, parameter)
