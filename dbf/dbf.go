@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"encoding/json"
-	"flag"
-	log "github.com/Sirupsen/logrus"
-	"io/ioutil"
+	"github.com/Sirupsen/logrus"
 	"strings"
 	"time"
 	"net/url"
@@ -18,12 +16,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"io"
 )
 
 var (
-	flagDebug   = flag.Bool("debug", false, "debug mode")
-
-	queryDuration = time.Minute
+	logger 		*logrus.Logger
 )
 
 type FinancialType int
@@ -63,7 +60,7 @@ func (m *dbf)saveLatestAll(file Interface) {
 		dateFieldA = "S2"
 		dateFieldB = "S6"
 	} else {
-		log.Warn("Unknown stock format")
+		logger.Warn("Unknown stock format")
 		return
 	}
 	sr := records[1]
@@ -78,7 +75,7 @@ func (m *dbf)saveLatestAll(file Interface) {
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	timestamp, err = time.ParseInLocation("20060102150405", dateTimeStr, loc)
 	if err != nil {
-		log.Warn(fmt.Sprintf("Parse %s time err. Error message:", stockFormat), err)
+		logger.Warn(fmt.Sprintf("Parse %s time err. Error message:", stockFormat), err)
 		return
 	}
 	if dateTimeStr == m.lastUpdateTimeStr {
@@ -103,14 +100,14 @@ func (m *dbf)saveLatestAll(file Interface) {
 		targetFields = targetFieldsSH
 		targetId = "S1"
 	} else {
-		log.Warn("Unknown stock format")
+		logger.Warn("Unknown stock format")
 		return
 	}
 	for _, r := range records {
 		target := r.Data[targetId] + "." + stockFormat
 		targetKey, err := key.ParseFromStr("stock/" + target)
 		if err != nil {
-			log.Warn("ParseFromStr err. Error message:", err.Error())
+			logger.Warn("ParseFromStr err. Error message:", err.Error())
 			continue
 		}
 		targetUid := targetKey.UID()
@@ -124,16 +121,13 @@ func (m *dbf)saveLatestAll(file Interface) {
 		for i, field := range targetFields {
 			fieldValues[fieldNames[i]], err = strconv.ParseFloat(r.Data[field], 64)
 			if err != nil {
-				log.Warn(fmt.Sprintf("Parse %s last err. Error message:", stockFormat), err.Error())
+				logger.Warn(fmt.Sprintf("Parse %s last err. Error message:", stockFormat), err.Error())
 				continue
 			}
 		}
 		tick := m.recordData[targetUid]
 		tick.key = targetKey
-		tick.suspension = m.suspension[targetUid]
 		tick.time = timestamp
-		tick.id = int64(m.updateId)
-		tick.productType = STOCK
 		if m.suspension[targetUid] || tick.low < 0.00001 || tick.low > 99990.0 {
 			//如果当前股票是停牌
 			tick.last = fieldValues[LAST]
@@ -153,7 +147,6 @@ func (m *dbf)saveLatestAll(file Interface) {
 		m.lastRecordMap[targetUid] = r
 		m.recordData[targetUid] = tick
 		m.latestRecords[targetUid] = &dbfRecord{
-			id: tick.id,
 			time: tick.time,
 			last: tick.last,
 			open: tick.open,
@@ -163,8 +156,6 @@ func (m *dbf)saveLatestAll(file Interface) {
 			volume: tick.volume,
 			key: tick.key,
 			status: tick.status,
-			suspension: tick.suspension,
-			productType: tick.productType,
 		}
 	}
 	m.updateId++
@@ -177,15 +168,20 @@ func (m *dbf)queryStock(ctx context.Context) error {
 	lastHash := []byte{}
 
 	for {
-		content, err := ioutil.ReadFile(stockDbf)
+		reader, err := os.OpenFile(stockDbf, os.O_RDONLY, 0666)
 		if err != nil {
-			log.Warn(err)
+			logger.Warn(err)
 		} else {
-			hash := hasher.Sum(content)
+			hasher.Reset()
+			_, err = io.Copy(hasher, reader)
+			if err != nil {
+				logger.Warn(err)
+				continue
+			}
+			hash := hasher.Sum(nil)
 			if bytes.Compare(hash, lastHash) != 0 {
-				log.Debug(fmt.Sprintf("%s changed", stockFormat))
+				logger.Debug(fmt.Sprintf("%s changed", stockFormat))
 				lastHash = hash
-				reader := bytes.NewReader(content)
 				m.saveLatestAll(reader)
 				for _, r := range m.latestRecords {
 					m.lock.RLock()
@@ -195,11 +191,11 @@ func (m *dbf)queryStock(ctx context.Context) error {
 					m.lock.RUnlock()
 				}
 			} else {
-				log.Debug(fmt.Sprintf("%s unchanged", stockFormat))
+				logger.Debug(fmt.Sprintf("%s unchanged", stockFormat))
 			}
 		}
 
-		timer := time.NewTimer(queryDuration)
+		timer := time.NewTimer(m.minTimeLeap)
 		select {
 		case <-timer.C:
 			timer.Stop()
@@ -216,14 +212,19 @@ func (m *dbf)checkStock(ctx context.Context) error {
 	dbfName := strings.SplitN(isStopDbf, ".", 2)[0]
 
 	for {
-		content, err := ioutil.ReadFile(isStopDbf)
+		reader, err := os.OpenFile(isStopDbf, os.O_RDONLY, 0666)
 		if err != nil {
-			log.Warn(err)
+			logger.Warn(err)
 		} else {
-			hash := hasher.Sum(content)
+			hasher.Reset()
+			_, err = io.Copy(hasher, reader)
+			if err != nil {
+			logger.Warn(err)
+			continue
+			}
+			hash := hasher.Sum(nil)
 			if bytes.Compare(hash, lastHash) != 0 {
-				log.Debug(fmt.Sprintf("%s changed", dbfName))
-				reader := bytes.NewReader(content)
+				logger.Debug(fmt.Sprintf("%s changed", dbfName))
 				records := GetRecords(reader)
 				delete(records, 1)
 				m.lock.Lock()
@@ -231,7 +232,7 @@ func (m *dbf)checkStock(ctx context.Context) error {
 					target := r.Data["XXZQDM"] + ".SZ"
 					targetKey, err := key.ParseFromStr("stock/" + target)
 					if err != nil {
-						log.Warn("ParseFromStr err. Error message:", err.Error())
+						logger.Warn("ParseFromStr err. Error message:", err.Error())
 					}
 					targetUid := targetKey.UID()
 					if r.Data["XXTPBZ"] == "T" {
@@ -243,11 +244,11 @@ func (m *dbf)checkStock(ctx context.Context) error {
 				m.lock.Unlock()
 				lastHash = hash
 			} else {
-				log.Debug(fmt.Sprintf("%s unchanged", dbfName))
+				logger.Debug(fmt.Sprintf("%s unchanged", dbfName))
 			}
 		}
 
-		timer := time.NewTimer(queryDuration)
+		timer := time.NewTimer(m.minTimeLeap)
 		select {
 		case <-timer.C:
 			timer.Stop()
@@ -258,19 +259,15 @@ func (m *dbf)checkStock(ctx context.Context) error {
 }
 
 type dbfRecord struct {
-	id							 int64
 	time                         time.Time
-	productType                  FinancialType
 	key                          market.QKey
 	open, high, low, close, last float64
 	volume                       float64
 	status                       string
-	suspension                   bool
 }
 
 type outputRecord struct {
 	Target                       string
-	Status                       string
 	ProductType                  int
 	Timestamp                    time.Time
 	Open, High, Low, Close, Last float64
@@ -297,7 +294,7 @@ func (record *dbfRecord) LPrice() float64 {
 func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 	return json.Marshal(outputRecord{
 		Target:      strings.TrimPrefix(record.key.String(), "stock/"),
-		ProductType: int(record.productType), //for stock market
+		ProductType: int(STOCK), //for stock market
 		Timestamp:   record.time,
 		Open:        record.open,
 		Close:       record.close,
@@ -305,12 +302,12 @@ func (record *dbfRecord) MarshalJSON() ([]byte, error) {
 		Low:         record.low,
 		Last:        record.last,
 		Volume:      record.volume,
-		Suspension:  record.suspension,
-		Status:      record.status,
+		Suspension:  record.status != "O",
 	})
 }
 
 type dbf struct {
+	minTimeLeap     	time.Duration
 	lock          		sync.RWMutex
 	recordData   		map[int]dbfRecord
 	lastRecordMap		map[int]Record
@@ -326,7 +323,7 @@ type dbf struct {
 }
 
 func (m *dbf) Run(ctx context.Context) error {
-	log.Debug(time.Now().String(), ": Try to connect with dbf server")
+	logger.Debug(time.Now().String(), ": Try to connect with dbf server")
 
 	if m.isStopDbf != "" {
 		go m.checkStock(ctx)
@@ -369,18 +366,18 @@ func (m *dbf) LatestAll() []market.Record {
 }
 
 //DBFScheme Dbf 格式的市场数据, 完整的路径定义为:
-//dbf:///mnt/dbf/SJSHQ.DBF?format=sz&&isStop=SJSXXN.DBF
+//dbf:///mnt/dbf/SJSHQ.DBF?format=sz&&isStop=SJSXXN.DBF&&debug=true&&minLeap=5s
 var DBFScheme = "dbf"
 
 //ErrIsDir 指定的路径是一个目录
 var ErrIsDir = errors.New("Is dir, want file")
 
 func initDBF(url *url.URL) (market.Market, error) {
-	flag.Parse()
-	if *flagDebug {
-		log.SetLevel(log.DebugLevel)
+	logger = logrus.New()
+	if url.Query().Get("debug") == "true" {
+		logger.Level = logrus.DebugLevel
 	} else {
-		log.SetLevel(log.InfoLevel)
+		logger.Level = logrus.InfoLevel
 	}
 	fInfo, err := os.Stat(url.Path)
 	if err != nil {
@@ -391,7 +388,7 @@ func initDBF(url *url.URL) (market.Market, error) {
 	}
 	tmp := strings.Split(url.Path, "/")
 	stockDbfFile := tmp[len(tmp)-1]
-	return &dbf{
+	ret := &dbf{
 		stockFormat	:	strings.ToUpper(url.Query().Get("format")),
 		isStopDbf:		url.Query().Get("isStop"),
 		stockDbf:		stockDbfFile,
@@ -401,7 +398,13 @@ func initDBF(url *url.URL) (market.Market, error) {
 		latestRecords: 	map[int]*dbfRecord{},
 		suspension: 	map[int]bool{},
 		updateId:		0,
-	}, nil
+	}
+	if du, err := time.ParseDuration(url.Query().Get("minLeap")); err == nil {
+		ret.minTimeLeap = du
+	} else {
+		ret.minTimeLeap = time.Second
+	}
+	return ret, nil
 }
 
 func init() {
