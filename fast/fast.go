@@ -22,11 +22,9 @@ import (
 	"bufio"
 )
 
-var (
-	logger 		*logrus.Logger
-)
-
 type fast struct {
+	logger 			*logrus.Logger
+	reader 			*os.File
 	minTimeLeap     time.Duration
 	lock            sync.RWMutex
 	path            string
@@ -39,15 +37,14 @@ type fast struct {
 func (m *fast) Run(ctx context.Context) error {
 	var failedForLastTime bool
 	var updatedCount int
+	logger := m.logger
 	hasher := md5.New()
 	lastHash := []byte{}
 	do := func() error {
-		reader, err := os.OpenFile(m.path, os.O_RDONLY, 0666)
-		if err != nil {
-			return err
-		}
-		defer reader.Close()
+		reader := m.reader
+		var err error
 		hasher.Reset()
+		reader.Seek(0, os.SEEK_SET)
 		_, err = io.Copy(hasher, reader)
 		if err != nil {
 			return err
@@ -58,9 +55,8 @@ func (m *fast) Run(ctx context.Context) error {
 			return nil
 		}
 		logger.Debug(fmt.Sprintf("changed"))
-		lastHash = hash
 		reader.Seek(0, os.SEEK_SET)
-		ss, err := unmarshalSnapShot(reader, m.parameter)
+		ss, err := m.unmarshalSnapShot(reader, m.parameter)
 		if err != nil {
 			return err
 		}
@@ -81,6 +77,7 @@ func (m *fast) Run(ctx context.Context) error {
 			}
 			m.lock.RUnlock()
 		}
+		lastHash = hash
 		return nil
 	}
 	var done bool
@@ -204,7 +201,7 @@ const (
 //ErrShortOfWords 数据缺少字段
 var ErrShortOfWords = errors.New("Short of words")
 
-func unmarshalSnapShot(reader io.Reader, parameters map[string]interface{}) (snapShot, error) {
+func (m *fast)unmarshalSnapShot(reader io.Reader, parameters map[string]interface{}) (snapShot, error) {
 	mSuffix := ".SH"
 	if mktName, exist := parameters["market"]; exist {
 		if mktNameStr, ok := mktName.(string); ok && mktNameStr == "SZ" {
@@ -233,7 +230,7 @@ func unmarshalSnapShot(reader io.Reader, parameters map[string]interface{}) (sna
 				continue
 			}
 			if len(words) < 13 {
-				logger.Warn(ErrShortOfWords)
+				m.logger.Warn(ErrShortOfWords)
 				continue
 			}
 			//get time out
@@ -278,7 +275,7 @@ func unmarshalSnapShot(reader io.Reader, parameters map[string]interface{}) (sna
 		}
 		lineIdx++
 	}
-	return snapShot(result), nil
+	return snapShot(result), scanner.Err()
 }
 
 type snapShot map[int]*fastRecord
@@ -291,7 +288,7 @@ var FastScheme = "fast"
 var ErrIsDir = errors.New("Is dir, want file")
 
 func initFast(url *url.URL) (market.Market, error) {
-	logger = logrus.New()
+	logger := logrus.New()
 	if url.Query().Get("debug") == "true" {
 		logger.Level = logrus.DebugLevel
 	} else {
@@ -308,16 +305,17 @@ func initFast(url *url.URL) (market.Market, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
 	var parameter map[string]interface{} = nil
 	if strings.ToUpper(url.Query().Get("market")) == "SZ" {
 		parameter = map[string]interface{}{"market": "SZ"}
 	}
-	ss, err := unmarshalSnapShot(reader, parameter)
+	ret := &fast{logger: logger, reader: reader, path: url.Path, parameter: parameter}
+	ss, err := ret.unmarshalSnapShot(reader, parameter)
 	if err != nil {
 		return nil, err
 	}
-	ret := &fast{path: url.Path, ss: ss, parameter: parameter}
+	reader.Seek(0, os.SEEK_SET)
+	ret.ss = ss
 	if du, err := time.ParseDuration(url.Query().Get("minLeap")); err == nil {
 		ret.minTimeLeap = du
 	} else {
