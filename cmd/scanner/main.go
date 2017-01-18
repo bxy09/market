@@ -7,6 +7,7 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/bxy09/market"
 	_ "github.com/bxy09/market/fast"
+	_ "github.com/bxy09/market/dbf"
 	_ "github.com/bxy09/market/tdf"
 	"github.com/garyburd/redigo/redis"
 	"net/url"
