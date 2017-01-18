@@ -454,5 +454,4 @@ func main() {
 			csvWriter.Flush()
 		}
 	}
-
 }
