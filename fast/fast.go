@@ -191,8 +191,8 @@ func (record *fastRecord) MarshalJSON() ([]byte, error) {
 
 const (
 	VolumeIdx = 3
-	OpenIdx = 5
-	CloseIdx = 6
+	CloseIdx = 5
+	OpenIdx = 6
 	HighIdx = 7
 	LowIdx = 8
 	LastIdx = 9
@@ -281,7 +281,7 @@ func (m *fast)unmarshalSnapShot(reader io.Reader, parameters map[string]interfac
 type snapShot map[int]*fastRecord
 
 //FastScheme Fast 格式的市场数据, 完整的路径定义为:
-// fast:///mnt/data/mkdt001.txt?market=SZ&&minLeap=5s&&debug=true
+// fast:///mnt/data/mkdt001.txt?market=SH&&minLeap=5s&&debug=true
 var FastScheme = "fast"
 
 //ErrIsDir 指定的路径是一个目录
@@ -306,16 +306,13 @@ func initFast(url *url.URL) (market.Market, error) {
 		return nil, err
 	}
 	var parameter map[string]interface{} = nil
-	if strings.ToUpper(url.Query().Get("market")) == "SZ" {
+	if strings.ToUpper(url.Query().Get("market")) == "SH" {
+		parameter = map[string]interface{}{"market": "SH"}
+	} else if strings.ToUpper(url.Query().Get("market")) == "SZ" {
 		parameter = map[string]interface{}{"market": "SZ"}
 	}
 	ret := &fast{logger: logger, reader: reader, path: url.Path, parameter: parameter}
-	ss, err := ret.unmarshalSnapShot(reader, parameter)
-	if err != nil {
-		return nil, err
-	}
-	reader.Seek(0, os.SEEK_SET)
-	ret.ss = ss
+	ret.ss = snapShot{}
 	if du, err := time.ParseDuration(url.Query().Get("minLeap")); err == nil {
 		ret.minTimeLeap = du
 	} else {
