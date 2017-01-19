@@ -1,17 +1,19 @@
 package fast
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/Sirupsen/logrus"
 	"github.com/bxy09/market"
 	"github.com/bxy09/market/key"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"os"
 	"strconv"
@@ -21,6 +23,8 @@ import (
 )
 
 type fast struct {
+	logger          *logrus.Logger
+	reader          *os.File
 	minTimeLeap     time.Duration
 	lock            sync.RWMutex
 	path            string
@@ -33,12 +37,26 @@ type fast struct {
 func (m *fast) Run(ctx context.Context) error {
 	var failedForLastTime bool
 	var updatedCount int
+	logger := m.logger
+	hasher := md5.New()
+	lastHash := []byte{}
 	do := func() error {
-		bytes, err := ioutil.ReadFile(m.path)
+		reader := m.reader
+		var err error
+		hasher.Reset()
+		reader.Seek(0, os.SEEK_SET)
+		_, err = io.Copy(hasher, reader)
 		if err != nil {
 			return err
 		}
-		ss, err := unmarshalSnapShot(bytes, m.parameter)
+		hash := hasher.Sum(nil)
+		if bytes.Compare(hash, lastHash) == 0 {
+			logger.Debug(fmt.Sprintf("unchanged"))
+			return nil
+		}
+		logger.Debug(fmt.Sprintf("changed"))
+		reader.Seek(0, os.SEEK_SET)
+		ss, err := m.unmarshalSnapShot(reader, m.parameter)
 		if err != nil {
 			return err
 		}
@@ -59,10 +77,11 @@ func (m *fast) Run(ctx context.Context) error {
 			}
 			m.lock.RUnlock()
 		}
+		lastHash = hash
 		return nil
 	}
 	var done bool
-	for !done{
+	for !done {
 		startTime := time.Now()
 		err := do()
 		if err != nil {
@@ -77,7 +96,7 @@ func (m *fast) Run(ctx context.Context) error {
 		costTime := time.Now().Sub(startTime)
 		extraSleepTime := m.minTimeLeap - costTime
 		if !m.mute {
-			logrus.WithFields(logrus.Fields{
+			logger.WithFields(logrus.Fields{
 				"costTime": costTime.String(),
 				"updated":  updatedCount,
 			}).Info("Trace done")
@@ -85,7 +104,7 @@ func (m *fast) Run(ctx context.Context) error {
 		if extraSleepTime > 0 {
 			select {
 			case <-ctx.Done():
-				logrus.Info("Done done")
+				logger.Info("Done done")
 				done = true
 			case <-time.After(extraSleepTime):
 			}
@@ -172,8 +191,8 @@ func (record *fastRecord) MarshalJSON() ([]byte, error) {
 
 const (
 	VolumeIdx = 3
-	OpenIdx   = 5
-	CloseIdx  = 6
+	CloseIdx  = 5
+	OpenIdx   = 6
 	HighIdx   = 7
 	LowIdx    = 8
 	LastIdx   = 9
@@ -182,109 +201,99 @@ const (
 //ErrShortOfWords 数据缺少字段
 var ErrShortOfWords = errors.New("Short of words")
 
-func unmarshalSnapShot(data []byte, parameters map[string]interface{}) (snapShot, error) {
+func (m *fast) unmarshalSnapShot(reader io.Reader, parameters map[string]interface{}) (snapShot, error) {
 	mSuffix := ".SH"
 	if mktName, exist := parameters["market"]; exist {
 		if mktNameStr, ok := mktName.(string); ok && mktNameStr == "SZ" {
 			mSuffix = ".SZ"
 		}
 	}
-
-	utfReader := transform.NewReader(bytes.NewReader(data), simplifiedchinese.GBK.NewDecoder())
-	tempBuf := make([]byte, len(data)*2)
-	utf8Size, err := utfReader.Read(tempBuf)
-	if err != nil {
-		return nil, err
-	}
-	reader := bytes.NewReader(tempBuf[:utf8Size])
-	buffer := bytes.NewBufferString("")
-
+	utfReader := transform.NewReader(reader, simplifiedchinese.GBK.NewDecoder())
+	scanner := bufio.NewScanner(utfReader)
 	result := make(map[int]*fastRecord)
 	var date = time.Now()
 	lineIdx := 0
-	for true { // lines
-		ru, _, err := reader.ReadRune()
-		if (err == io.EOF && buffer.Len() > 0) || (err == nil && ru == '\n') {
-			words := strings.Split(buffer.String(), "|")
-			if lineIdx == 0 {
-				if len(words) < 7 {
-					return nil, ErrShortOfWords
-				}
-				date, err = time.ParseInLocation("20060102-15:04:05.999", words[6], time.Local)
+	for scanner.Scan() {
+		line := scanner.Text()
+		words := strings.Split(line, "|")
+		if lineIdx == 0 {
+			if len(words) < 7 {
+				return nil, ErrShortOfWords
+			}
+			var err error
+			date, err = time.ParseInLocation("20060102-15:04:05.999", words[6], time.Local)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			if len(words) == 2 && words[0] == "TRAILER" {
+				continue
+			}
+			if len(words) < 13 {
+				m.logger.Warn(ErrShortOfWords)
+				continue
+			}
+			//get time out
+			clock, err := time.ParseInLocation("15:04:05.999", words[len(words)-1], time.Local)
+			if err != nil {
+				return nil, err
+			}
+			y, m, d := date.Date()
+			h, minute, s := clock.Clock()
+			ct := time.Date(y, m, d, h, minute, s, clock.Nanosecond(), time.Local)
+			//get target out
+			qkey, err := key.ParseFromStr("stock/" + words[1] + mSuffix)
+			if err != nil {
+				return nil, err
+			}
+			//get price out
+			var close, open, high, low, volume, last float64
+			fps := []*float64{&close, &open, &high, &low, &volume, &last}
+			idxs := []int{CloseIdx, OpenIdx, HighIdx, LowIdx, VolumeIdx, LastIdx}
+			for i, fp := range fps {
+				*fp, err = strconv.ParseFloat(strings.TrimSpace(words[idxs[i]]), 64)
 				if err != nil {
 					return nil, err
-				}
-			} else {
-				if len(words) < 13 {
-					return nil, ErrShortOfWords
-				}
-				//get time out
-				clock, err := time.ParseInLocation("15:04:05.999", words[len(words)-1], time.Local)
-				if err != nil {
-					return nil, err
-				}
-				y, m, d := date.Date()
-				h, minute, s := clock.Clock()
-				ct := time.Date(y, m, d, h, minute, s, clock.Nanosecond(), time.Local)
-				//get target out
-				qkey, err := key.ParseFromStr("stock/" + words[1] + mSuffix)
-				if err != nil {
-					return nil, err
-				}
-				//get price out
-				var close, open, high, low, volume, last float64
-				fps := []*float64{&close, &open, &high, &low, &volume, &last}
-				idxs := []int{CloseIdx, OpenIdx, HighIdx, LowIdx, VolumeIdx, LastIdx}
-				for i, fp := range fps {
-					*fp, err = strconv.ParseFloat(strings.TrimSpace(words[idxs[i]]), 64)
-					if err != nil {
-						return nil, err
-					}
-				}
-				if last > 0.0001 {
-					record := &fastRecord{
-						time:   ct,
-						key:    qkey,
-						close:  close,
-						open:   open,
-						high:   high,
-						low:    low,
-						last:   last,
-						volume: volume,
-						status: strings.TrimSpace(words[len(words)-2]),
-					}
-					result[record.Key().UID()] = record
-				} else {
-					logrus.WithField("target", qkey.String()).Warn("扫描数据时发现有对象的 Last 字段为零, 提过该对象")
 				}
 			}
-			buffer.Reset()
-			lineIdx++
+			if last > 0.0001 {
+				record := &fastRecord{
+					time:   ct,
+					key:    qkey,
+					close:  close,
+					open:   open,
+					high:   high,
+					low:    low,
+					last:   last,
+					volume: volume,
+					status: strings.TrimSpace(words[len(words)-2]),
+				}
+				result[record.Key().UID()] = record
+			} else {
+				//logger.WithField("target", qkey.String()).Warn("扫描数据时发现有对象的 Last 字段为零, 提过该对象")
+			}
 		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if ru == '\r' || ru == '\n' {
-			continue
-		}
-		buffer.WriteRune(ru)
+		lineIdx++
 	}
-	return snapShot(result), nil
+	return snapShot(result), scanner.Err()
 }
 
 type snapShot map[int]*fastRecord
 
 //FastScheme Fast 格式的市场数据, 完整的路径定义为:
-// fast:///mnt/data/mkdt001.txt
+// fast:///mnt/data/mkdt001.txt?market=SH&&minLeap=5s&&debug=true
 var FastScheme = "fast"
 
 //ErrIsDir 指定的路径是一个目录
 var ErrIsDir = errors.New("Is dir, want file")
 
 func initFast(url *url.URL) (market.Market, error) {
+	logger := logrus.New()
+	if url.Query().Get("debug") == "true" {
+		logger.Level = logrus.DebugLevel
+	} else {
+		logger.Level = logrus.InfoLevel
+	}
 	fInfo, err := os.Stat(url.Path)
 	if err != nil {
 		return nil, err
@@ -292,19 +301,18 @@ func initFast(url *url.URL) (market.Market, error) {
 	if fInfo.IsDir() {
 		return nil, ErrIsDir
 	}
-	bytes, err := ioutil.ReadFile(url.Path)
+	reader, err := os.OpenFile(url.Path, os.O_RDONLY, 0666)
 	if err != nil {
 		return nil, err
 	}
 	var parameter map[string]interface{} = nil
-	if url.Query().Get("market") == "SZ" {
+	if strings.ToUpper(url.Query().Get("market")) == "SH" {
+		parameter = map[string]interface{}{"market": "SH"}
+	} else if strings.ToUpper(url.Query().Get("market")) == "SZ" {
 		parameter = map[string]interface{}{"market": "SZ"}
 	}
-	ss, err := unmarshalSnapShot(bytes, parameter)
-	if err != nil {
-		return nil, err
-	}
-	ret := &fast{path: url.Path, ss: ss, parameter: parameter}
+	ret := &fast{logger: logger, reader: reader, path: url.Path, parameter: parameter}
+	ret.ss = snapShot{}
 	if du, err := time.ParseDuration(url.Query().Get("minLeap")); err == nil {
 		ret.minTimeLeap = du
 	} else {
